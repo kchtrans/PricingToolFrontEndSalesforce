@@ -1,0 +1,818 @@
+<apex:page showHeader="false" sidebar="false" standardStylesheets="false" controller="KCHQuoteToolController">
+    <html>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+        <apex:includeScript value="{!$Resource.KCHQuoteToolJavascript}"/>
+        <apex:stylesheet value="{!$Resource.KCHQuoteToolStyle}"/>
+        <link href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet"/>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script>
+            var greenscreensInfoglobal;
+            var laneQuoteHistoryChart;
+            var currentChart;
+            
+            var jdmJson = {
+              "contentType": "application/vnd.gorules.decision",
+              "nodes": [
+                {
+                  "id": "8aeca84c-b9fd-494e-a7da-81860b4e6d48",
+                  "type": "inputNode",
+                  "name": "request"
+                },
+                {
+                  "id": "2162b130-cdc3-4329-9816-08222eb95907",
+                  "type": "outputNode",
+                  "name": "response"
+                },
+                {
+                  "id": "0cbbd02e-c88b-4ae7-910e-5f606fa61bb4",
+                  "type": "decisionTableNode",
+                  "name": "decisionTable1",
+                  "content": {
+                    "hitPolicy": "first",
+                    "inputs": [
+                      {
+                        "id": "4c7b7f6c-6278-439e-87da-d21195614f60",
+                        "name": "SonarRate",
+                        "type": "expression",
+                        "field": "SonarRate"
+                      }
+                    ],
+                    "outputs": [
+                      {
+                        "id": "4aa59fcb-365d-4361-b0bb-43c2cddf715f",
+                        "field": "BestRate",
+                        "name": "BestRate",
+                        "type": "expression"
+                      }
+                    ],
+                    "rules": [
+                      {
+                        "4c7b7f6c-6278-439e-87da-d21195614f60": "SonarRate",
+                        "4aa59fcb-365d-4361-b0bb-43c2cddf715f": "SonarRate"
+                      },
+                      {
+                        "4c7b7f6c-6278-439e-87da-d21195614f60": "",
+                        "4aa59fcb-365d-4361-b0bb-43c2cddf715f": ""
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "e9d783ef-880e-4ccb-a9ad-723c696c2325",
+                  "type": "expressionNode",
+                  "name": "expression1",
+                  "content": {
+                    "expressions": [
+                      {
+                        "key": "SonarRate",
+                        "value": "Rates.Sonar.Rate"
+                      },
+                      {
+                        "key": "GreenScreensRate",
+                        "value": "Rates.GreenScreens.Rate"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "06c4dd4f-0fa3-42be-81ff-07dd5c037af3",
+                  "type": "switchNode",
+                  "name": "switch1",
+                  "content": {
+                    "statements": [
+                      {
+                        "condition": "SonarRate < GreenScreensRate"
+                      },
+                      {
+                        "condition": "GreenScreensRate < SonarRate"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "edges": [
+                {
+                  "sourceId": "8aeca84c-b9fd-494e-a7da-81860b4e6d48",
+                  "targetId": "e9d783ef-880e-4ccb-a9ad-723c696c2325"
+                },
+                {
+                  "sourceId": "e9d783ef-880e-4ccb-a9ad-723c696c2325",
+                  "targetId": "06c4dd4f-0fa3-42be-81ff-07dd5c037af3"
+                },
+                {
+                  "sourceId": "06c4dd4f-0fa3-42be-81ff-07dd5c037af3",
+                  "targetId": "0cbbd02e-c88b-4ae7-910e-5f606fa61bb4",
+                  "sourceHandle": "SonarRate < GreenScreensRate"
+                },
+                {
+                  "sourceId": "0cbbd02e-c88b-4ae7-910e-5f606fa61bb4",
+                  "targetId": "2162b130-cdc3-4329-9816-08222eb95907"
+                }
+              ]
+            };
+            
+            function getAccessTokenPT() {
+                Visualforce.remoting.Manager.invokeAction(
+                    '{!$RemoteAction.KCHQuoteToolController.getKCHAccessToken}',
+                    function(result, event) {
+                        if (event.status) {
+                            var accessTokenPT = result;
+                            getQuote(accessTokenPT);
+                            console.log('KCH Access Token:', accessTokenPT);
+                        } else {
+                            console.error('Error fetching KCH access token:', event.message);
+                        }
+                    },
+                    { escape: false }
+                );
+            }
+
+            function getBestRate(greenscreensRate, sonarRate) {
+                var bestRate;
+                var decisionTable = jdmJson.nodes.find(node => node.type === 'decisionTableNode' && node.name === 'decisionTable1');
+                var switchNode = jdmJson.nodes.find(node => node.type === 'switchNode' && node.name === 'switch1');
+
+                var condition1 = eval(switchNode.content.statements[0].condition.replace('SonarRate', sonarRate).replace('GreenScreensRate', greenscreensRate));
+                var condition2 = eval(switchNode.content.statements[1].condition.replace('SonarRate', sonarRate).replace('GreenScreensRate', greenscreensRate));
+
+                if (condition1) {
+                    bestRate = sonarRate;
+                } else if (condition2) {
+                    bestRate = greenscreensRate;
+                } else {
+                    bestRate = Math.min(greenscreensRate, sonarRate);
+                }
+
+                return bestRate;
+            }
+
+            function parseLocation(input) {
+                const regexWithZip = /^([^,]+),\s*([A-Z]{2})\s*(\d{5})$/;
+                const regexWithoutZip = /^([^,]+),\s*([A-Z]{2})$/;
+
+                let match = input.match(regexWithZip);
+                if (match) {
+                    return {
+                        city: match[1].trim(),
+                        state: match[2].trim(),
+                        zip: match[3].trim()
+                    };
+                }
+                match = input.match(regexWithoutZip);
+                if (match) {
+                    return {
+                        city: match[1].trim(),
+                        state: match[2].trim()
+                    };
+                }
+                return null;
+            }
+
+            function getQuote(accessTokenPT) {
+                var pickupInput = document.getElementById('pickupInput').value;
+                var dropoffInput = document.getElementById('dropoffInput').value;
+                var ModeName = document.getElementById('ModeName').value;
+                var pickupDateTime = formatDateTime(document.getElementById('datetime1').value);
+
+                var pickup = parseLocation(pickupInput);
+                var dropoff = parseLocation(dropoffInput);
+
+                if (!pickup || !dropoff) {
+                    console.error('Invalid location format');
+                    return;
+                }
+
+                console.log('Calling getratequote with parameters:', {
+                    accessTokenPT,
+                    pickupCity: pickup.city,
+                    pickupState: pickup.state,
+                    pickupZip: pickup.zip,
+                    dropoffCity: dropoff.city,
+                    dropoffState: dropoff.state,
+                    dropoffZip: dropoff.zip,
+                    transportType: ModeName,
+                    pickupDateTime
+                });
+
+                Visualforce.remoting.Manager.invokeAction(
+                    '{!$RemoteAction.KCHQuoteToolController.getratequote}',
+                    accessTokenPT, pickup.city, pickup.state, pickup.zip, dropoff.city, dropoff.state, dropoff.zip, ModeName, pickupDateTime,
+                    function(quoteResult, quoteEvent) {
+                        if (quoteEvent.status) {
+                            var quote = JSON.parse(quoteResult);
+                            var greenscreensInfo = quote.service_responses.greenscreens;
+                            greenscreensInfoglobal = quote.service_responses.greenscreens;
+                            var sonarInfo = quote.service_responses.sonar;
+
+                            var greenscreensRate = greenscreensInfo.lane_price_prediction.targetBuyRate;
+                            var sonarRate = sonarInfo.contract_flat_current;
+
+                            var bestRate = getBestRate(greenscreensRate, sonarRate);
+
+                            displayQuote(greenscreensInfo, sonarInfo, bestRate);
+                        } else {
+                            console.error('Error fetching quote:', quoteEvent.message);
+                        }
+                    },
+                    { escape: false }
+                );
+            }
+
+            function formatDateTime(dateTimeStr) {
+                const date = new Date(dateTimeStr);
+                const pad = (num) => (num < 10 ? '0' : '') + num;
+                const offset = -date.getTimezoneOffset();
+                const offsetSign = offset >= 0 ? '+' : '-';
+                const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
+                const offsetMinutes = pad(Math.abs(offset) % 60);
+                
+                return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.000${offsetSign}${offsetHours}:${offsetMinutes}`;
+            }
+            
+            function formatDateTime2(dateTimeStr) {
+                const date = new Date(dateTimeStr);
+                const pad = (num) => (num < 10 ? '0' : '') + num;
+                const offset = -date.getTimezoneOffset();
+                const offsetSign = offset >= 0 ? '+' : '-';
+                const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
+                const offsetMinutes = pad(Math.abs(offset) % 60);
+                
+                return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${date.getFullYear()}`;
+            }
+
+            function displayQuote(greenscreensInfo, sonarInfo, bestRate) {
+                console.log("Greenscreens Data:", greenscreensInfo);
+                console.log("Sonar Data:", sonarInfo);
+                console.log("Best Rate:", bestRate);
+
+                var buyRate = Math.ceil(greenscreensInfo.lane_price_prediction.targetBuyRate * greenscreensInfo.lane_price_prediction.distance);
+                var sonarbuyrate = sonarInfo.contract_flat_current;
+
+                document.getElementById('buy').value = buyRate;
+                document.getElementById('distance').innerHTML = Math.ceil(greenscreensInfo.lane_price_prediction.distance) + ' mi';
+                document.getElementById('sell').value = Math.ceil((buyRate * .15) + buyRate);
+                document.getElementById('buysonar').value = sonarbuyrate;
+                document.getElementById('bestrate').value = bestRate;
+
+                var pickup = document.getElementById('pickupInput').value;
+                var dropoff = document.getElementById('dropoffInput').value;
+                var ModeName = document.getElementById('ModeName').value;
+                var pickupDateTime = formatDateTime2(document.getElementById('datetime1').value);
+
+                document.getElementById('DraftEmail').value = `Hello,
+
+We have a truck in ${pickup} picking up on ${pickupDateTime} for $${buyRate}.
+
+Rate: $${buyRate}
+Origin: ${pickup}
+Destination: ${dropoff}
+Equipment: ${ModeName}
+
+Please confirm to get this booked.`;
+            }
+
+            function showMarketIntelligence() {
+                if (!greenscreensInfoglobal || !greenscreensInfoglobal.origin_market_intelligence || !greenscreensInfoglobal.destination_market_intelligence) {
+                    console.error('Greenscreens Info is not properly defined:', greenscreensInfoglobal);
+                    return;
+                }
+
+                const ctx = document.getElementById('laneQuoteHistoryChart').getContext('2d');
+                if (currentChart) {
+                    currentChart.destroy();
+                }
+
+                currentChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Inbound Load Flow', 'Outbound Load Flow'],
+                        datasets: [{
+                            label: 'Instant Rate',
+                            data: [
+                                greenscreensInfoglobal.origin_market_intelligence.inboundLoadFlow.instant,
+                                greenscreensInfoglobal.destination_market_intelligence.inboundLoadFlow.instant
+                            ],
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 1
+                        }, {
+                            label: 'Derivative',
+                            data: [
+                                greenscreensInfoglobal.origin_market_intelligence.inboundLoadFlow.derivative,
+                                greenscreensInfoglobal.destination_market_intelligence.inboundLoadFlow.derivative
+                            ],
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            function showLaneQuoteHistory() {
+                fetchLaneQuoteHistory();
+            }
+
+            function fetchLaneQuoteHistory() {
+                var pickupInput = document.getElementById('pickupInput').value;
+                var dropoffInput = document.getElementById('dropoffInput').value;
+                var ModeName = document.getElementById('ModeName').value;
+                var description = document.getElementById('Description').value;
+                var pickupDateTime = formatDateTime(document.getElementById('datetime1').value);
+
+                var pickup = parseLocation(pickupInput);
+                var dropoff = parseLocation(dropoffInput);
+
+                if (!pickup || !dropoff) {
+                    console.error('Invalid location format');
+                    return;
+                }
+
+                Visualforce.remoting.Manager.invokeAction(
+                    '{!$RemoteAction.KCHQuoteToolController.fetchLaneQuoteHistory}',
+                    pickup.city, pickup.state, pickup.zip, dropoff.city, dropoff.state, dropoff.zip, ModeName, description, pickupDateTime,
+                    function(result, event) {
+                        if (event.status) {
+                            var data = JSON.parse(result);
+                            plotLaneQuoteHistory(data.items);
+                        } else {
+                            console.error('Error fetching lane quote history:', event.message);
+                        }
+                    },
+                    { escape: false }
+                );
+            }
+
+            function plotLaneQuoteHistory(data) {
+                if (currentChart) {
+                    currentChart.destroy();
+                }
+
+                const ctx = document.getElementById('laneQuoteHistoryChart').getContext('2d');
+                const labels = data.map(item => new Date(item.date * 1000).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
+                const medianRates = data.map(item => item.medianFlatRate);
+                const minRates = data.map(item => item.minAndMaxFlatRate[0]);
+                const maxRates = data.map(item => item.minAndMaxFlatRate[1]);
+
+                currentChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'GS Rate',
+                            data: medianRates,
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            fill: false
+                        }, {
+                            label: 'Min Rate',
+                            data: minRates,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            fill: false
+                        }, {
+                            label: 'Max Rate',
+                            data: maxRates,
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            fill: false
+                        }]
+                    },
+                    options: {
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            function fetchNegotiationCoach() {
+                var pickupInput = document.getElementById('pickupInput').value;
+                var dropoffInput = document.getElementById('dropoffInput').value;
+                var ModeName = document.getElementById('ModeName').value;
+                var description = document.getElementById('Description').value;
+                var pickupDateTime = formatDateTime(document.getElementById('datetime1').value);
+
+                var pickup = parseLocation(pickupInput);
+                var dropoff = parseLocation(dropoffInput);
+
+                if (!pickup || !dropoff) {
+                    console.error('Invalid location format');
+                    return;
+                }
+
+                Visualforce.remoting.Manager.invokeAction(
+                    '{!$RemoteAction.KCHQuoteToolController.fetchNegotiationCoach}',
+                    pickup.city, pickup.state, pickup.zip, dropoff.city, dropoff.state, dropoff.zip, ModeName, description, pickupDateTime,
+                    function(result, event) {
+                        if (event.status) {
+                            var data = JSON.parse(result);
+                            negotiate(data);
+                        } else {
+                            console.error('Error fetching lane quote history:', event.message);
+                        }
+                    },
+                    { escape: false }
+                );
+            }
+
+            function negotiate(result) {
+                const lastPaid = result.lastPaid;
+                const minPaid = result.minPaid;
+                const maxPaid = result.maxPaid;
+                const inspectionWeeks = result.inspectionWeeks;
+
+                let holidayInfoHTML = '';
+                let lastPaidHTML = '';
+                let minPaidHTML = '';
+                let maxPaidHTML = '';
+
+                if (inspectionWeeks && inspectionWeeks.name) {
+                    holidayInfoHTML = `
+                        <p>
+                            The pickup date is scheduled for ${inspectionWeeks.name.replace(/_/g, ' ')}. This may increase carrier rates and make loads more difficult to cover.
+                        </p>
+                        <p style="font-style: italic; font-size: 12px;">${inspectionWeeks.name.replace(/_/g, ' ')} pickup. Increased rates</p>
+                    `;
+                }
+
+                if (lastPaid) {
+                    const lastPaidDate = new Date(lastPaid.date).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+                    lastPaidHTML = `
+                        <p>
+                            The last time we moved this load, we paid $${lastPaid.amount.toFixed(2)} to the ${lastPaid.carrier}.
+                        </p>
+                        <p style="font-style: italic; font-size: 12px;">
+                                • Last Move: $${lastPaid.amount.toFixed(2)} on ${lastPaidDate}; Carrier: ${lastPaid.carrier}
+                        </p>
+                    `;
+                }
+
+                if (minPaid) {
+                    const minPaidDate = new Date(minPaid.date).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+                    minPaidHTML = `
+                        <p>
+                            The lowest we have moved this load in the last 30 days is $${minPaid.amount.toFixed(2)}
+                        </p>
+                        <p style="font-style: italic; font-size: 12px;">
+                                • Lowest Move: $${minPaid.amount.toFixed(2)} on ${minPaidDate}
+                        </p>
+                    `;
+                }
+
+                if (maxPaid) {
+                    const maxPaidDate = new Date(maxPaid.date).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+                    maxPaidHTML = `
+                        <p>
+                            The most we have paid for this in the last 30 days is $${maxPaid.amount.toFixed(2)}
+                        </p>
+                        <p style="font-style: italic; font-size: 12px;">
+                                • Max paid rate: $${maxPaid.amount.toFixed(2)} on ${maxPaidDate}
+                        </p>
+                    `;
+                }
+
+                document.getElementById('holiday').innerHTML = holidayInfoHTML || '';
+                document.getElementById('lastPaid').innerHTML = lastPaidHTML || '';
+                document.getElementById('minPaid').innerHTML = minPaidHTML || '';
+                document.getElementById('maxPaid').innerHTML = maxPaidHTML || '';
+            }
+
+            document.addEventListener('DOMContentLoaded', function() {
+                document.getElementById('customer').addEventListener('input', function() {
+                    const searchText = this.value;
+                    if (searchText.length >= 0) {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.KCHQuoteToolController.searchAccounts}',
+                            searchText,
+                            function(result, event) {
+                                if (event.status) {
+                                    const datalist = document.getElementById('lookupOptions');
+                                    datalist.innerHTML = '';
+                                    result.forEach(account => {
+                                        const option = document.createElement('option');
+                                        option.value = account.Name;
+                                        datalist.appendChild(option);
+                                    });
+                                } else {
+                                    console.error('Error fetching accounts:', event.message);
+                                }
+                            },
+                            { escape: false }
+                        );
+                    }
+                });
+
+                document.getElementById('showlaneanalysis').addEventListener('click', function() {
+                    fetchLaneQuoteHistory();
+                    fetchNegotiationCoach();
+                });
+
+                document.querySelectorAll('.tab-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                        this.classList.add('active');
+
+                        if (this.textContent.includes('Market Intelligence')) {
+                            showMarketIntelligence();
+                        } else if (this.textContent.includes('Lane Quote History')) {
+                            showLaneQuoteHistory();
+                        }
+                    });
+                });
+
+                document.getElementById('buildOrderBtn').addEventListener('click', function() {
+                    buildOrdersFromSelectedQuotes();
+                });
+
+                function buildOrdersFromSelectedQuotes() {
+                    const selectedCards = document.querySelectorAll('.card .select-card:checked');
+                    if (selectedCards.length === 0) {
+                        alert('Please select at least one quote card to build an order.');
+                        return;
+                    }
+
+                    selectedCards.forEach(cardCheckbox => {
+                        const card = cardCheckbox.closest('.card');
+                        const customer = card.querySelector('.card-title').textContent;
+                        const details = card.querySelectorAll('.card-details');
+                        const [pickup, dropoff] = details[0].textContent.split(' ➔ ');
+                        const ModeName = details[1].textContent.split(' • ')[0];
+                        const description = details[1].textContent.split(' • ')[1];
+                        const weight = details[1].textContent.split(' • ')[2].replace(' lbs', '');
+                        const buyrate = card.querySelectorAll('.card-details')[2].textContent.split('Buy Rate: ')[1].split(' • ')[0];
+                        const sellrate = card.querySelectorAll('.card-details')[2].textContent.split('Sell Rate: ')[1];
+                        const bestRate = card.dataset.bestrate;
+
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.KCHQuoteToolController.createLoad}',
+                            customer, ModeName, description, weight, pickup.split(', ')[0], pickup.split(', ')[1], dropoff.split(', ')[0], dropoff.split(', ')[1], buyrate, sellrate, bestRate,
+                            function(result, event) {
+                                if (event.status) {
+                                    console.log('Load created successfully with ID:', result);
+                                } else {
+                                    console.error('Error creating load:', event.message);
+                                }
+                            },
+                            { escape: false }
+                        );
+                    });
+                }
+            });
+        </script>
+    </head>
+    <body>
+        <div class="header">
+            <div class="button-container">
+                <button id="billingrulsBtn" name="billingrulsBtn" class="billingrulsBtn" style="display: none;">Billing Rules</button>
+            </div>
+        </div>
+        <div class="billingruls" id="billingruls" style="display: none;">
+            <button id="backBtnbilling" name="backBtnbilling" class="form-submit">Back</button>
+            <button id="saveBtnbilling" name="saveBtnbilling" class="form-submit">Save</button>
+        </div>
+        <div class="page active" id="mainPage">
+            <div class="button-container">
+                <button id="createQuoteBtn" name="createQuoteBtn" class="createQuoteBtn">Create Quote</button>
+                <button id="buildOrderBtn" name="buildOrderBtn" class="buildOrderBtn">Build Order</button>
+            </div>
+            <div id="cardsContainer" class="card-container">
+                <button id="cancelbatchreply" name="cancelbatchreply" class="cancelbatchreply">Cancel</button>
+                <button id="batchreply" name="batchreply" class="batchreply">Batch Reply</button>
+            </div>
+        <br/>
+            <div class="draftresponse2" id="draftresponse2">
+                <label name="Draft2" id="Draft2">Draft Response: </label>
+                <button id="createDraftBtn2" class="createDraftBtn2">Create Draft</button><br /><br />
+                <textarea name="DraftEmail2" id="DraftEmail2" class="DraftEmail2"></textarea>
+            </div>
+        </div>
+        
+        <div class="fullpage">
+            <div class="page" id="formContainer">
+                <div id="topbuttons" class="topbuttons">
+                    <button id="backBtn" name="backBtn" class="form-submit">Back</button>
+                    <button id="saveBtn" name="saveBtn" class="form-submit">Save</button>
+                </div>
+                <br/>
+
+                <div id="InfoNeeded" class="InfoNeeded">
+                    <div id="validationPopup" class="validationPopup">
+                        <label id="disclaimer" class="disclaimer">
+                            <p style="font-style: bold; font-size: 14px;">Please fill in all the required fields:</p>
+                            <p style="font-style: normal; font-size: 12px;">Customer, Mode, Equipment Type, Pickup, Drop Off</p>
+                        </label>
+                    </div>
+                <br/>
+                </div>
+                
+                <div class="form-row">
+                    <div class="customerform">
+                        <label for="Customer" class="required">Customer: </label>
+                        <input type="text" id="customer" class="form-input" placeholder="Search..." list="lookupOptions" required="required"/>
+                        <datalist id="lookupOptions"></datalist>
+                    </div>
+                    
+                    <div class="customerform">
+                        <label for="Parameters" class="required">Mode: </label><br />
+                        <select id="ModeName" class="form-input">
+                            <option value="VAN">Van</option>
+                            <option value="LTL">LTL</option>
+                            <option value="TRUCKLOAD">Truckload</option>
+                            <option value="AIR FREIGHT">Air Freight</option>
+                            <option value="INTERMODAL">Intermodal</option>
+                            <option value="BULK">Bulk</option>
+                            <option value="WAREHOUSE">Warehouse</option>
+                            <option value="REEFER">Reefer</option>
+                            <option value="DRAYAGE">Drayage</option>
+                        </select>
+                    </div>
+                    <div class="customerform">
+                        <label name="ET" class="required">Equipment Type: </label><br />
+                        <select id="equipmentType" class="form-input">
+                            <option value="Dry Van 53">Dry Van 53</option>
+                            <option value="Container 40">Container 40</option>
+                            <option value="Container 20">Container 20</option>
+                            <option value="Dry Van 48">Dry Van 48</option>
+                            <option value="Dry Van 45">Dry Van 45</option>
+                            <option value="Dry Van 43">Dry Van 43</option>
+                            <option value="Dry Van 42">Dry Van 42</option>
+                            <option value="Dry Van 40">Dry Van 40</option>
+                            <option value="Dry Van/Pup 28">Dry Van/Pup 28</option>
+                            <option value="Reefer 53">Reefer 53</option>
+                            <option value="Reefer 51">Reefer 51</option>
+                            <option value="Reefer 48">Reefer 48</option>
+                            <option value="Container Reefer 40">Container Reefer 40</option>
+                            <option value="Reefer 36">Reefer 36</option>
+                            <option value="Straight Box Truck 26">Straight Box Truck 26</option>
+                            <option value="Straight Box Truck 25">Straight Box Truck 25</option>
+                            <option value="Straight Box Truck 24">Straight Box Truck 24</option>
+                            <option value="Trailer on Flat Car / Piggyback">Trailer on Flat Car / Piggyback</option>
+                            <option value="Container 45">Container 45</option>
+                            <option value="Container 45 High Cube">Container 45 High Cube</option>
+                            <option value="Container 40 High Cube">Container 40 High Cube</option>
+                            <option value="Open Top Trailer 48'">Open Top Trailer 48</option>
+                            <option value="Curtain Side 53">Curtain Side 53</option>
+                            <option value="Curtain Side 48">Curtain Side 48</option>
+                            <option value="Flatbed 48">Flatbed 48</option>
+                            <option value="Flatbed 53">Flatbed 53</option>
+                            <option value="Step Deck 2 Axle 48">Step Deck 2 Axle 48</option>
+                            <option value="Step Deck 2 Axle 53">Step Deck 2 Axle 53</option>
+                            <option value="Double Drop / Low Boy">Double Drop / Low Boy</option>
+                            <option value="Double Drop RGN">Double Drop RGN</option>
+                            <option value="Stretch / Expandable Flatbed Trailer">Stretch / Expandable Flatbed Trailer</option>
+                            <option value="Stretch / Expandable Single Drop Deck">Stretch / Expandable Single Drop Deck</option>
+                            <option value="Stretch / Expandable Double Drop Deck">Stretch / Expandable Double Drop Deck</option>
+                            <option value="Straight Box Truck">Straight Box Truck</option>
+                            <option value="Sprinter Van">Sprinter Van</option>
+                            <option value="Power Only">Power Only</option>
+                            <option value="Hotshot 40">Hotshot 40</option>
+                            <option value="Van">Van</option>
+                            <option value="Flatbed-Triaxle">Flatbed-Triaxle</option>
+                            <option value="Conestoga 48">Conestoga 48</option>
+                            <option value="Conestoga 53">Conestoga 53</option>
+                            <option value="Dry Tanker">Dry Tanker</option>
+                            <option value="Liquid Tanker">Liquid Tanker</option>
+                            <option value="Hopper Bottom">Hopper Bottom</option>
+                            <option value="Walking Floor">Walking Floor</option>
+                            <option value="Pneumatic Trailer">Pneumatic Trailer</option>
+                            <option value="Belt Trailer">Belt Trailer</option>
+                            <option value="Dump Trailer">Dump Trailer</option>
+                            <option value="Open Top 40">Open Top 40</option>
+                            <option value="ISO Tank 20">ISO Tank 20</option>
+                            <option value="ISO Tank 40">ISO Tank 40</option>
+                            <option value="Container 53">Container 53</option>
+                            <option value="Landoll Tandem Axle">Landoll Tandem Axle</option>
+                            <option value="Landoll  TriAxle">Landoll  TriAxle</option>
+                            <option value="High Cube Open Top 40">High Cube Open Top 40</option>
+                            <option value="Warehouse">Warehouse</option>
+                            <option value="Container Reefer 20">Container Reefer 20</option>
+                            <option value="Container 40 Flat Rack">Container 40 Flat Rack</option>
+                            <option value="Container 20 Flat Rack">Container 20 Flat Rack</option>
+                            <option value="Step Deck 2 Axle 53 Lowpro">Step Deck 2 Axle 53 Lowpro</option>
+                            <option value="Logging 4 Bunk Trailer">Logging 4 Bunk Trailer</option>
+                            <option value="Logging 6 Bunk Trailer">Logging 6 Bunk Trailer</option>
+                        </select>
+                    </div>
+                    <div class="customerform">
+                        <label name="desc" >Description: </label><br />
+                        <input type="text" id="Description" class="form-input" placeholder="Description"/>
+                    </div>
+                    <div class="customerform">
+                        <label name="wgt" >Weight: </label><br />
+                        <input type="number" id="Weight" class="form-input" placeholder="Weight (lbs)"/>
+                    </div>
+                    
+                    <div class="customerform">
+                        <label name="Pickup-Up" id="lane1" class="required">Pickup-Up: </label><br />
+                        <input type="text" id="pickupInput" class="form-input" placeholder="Pick-up (City, State / 5d ZIP)" required="required" list="pickupInputOptions"/>
+                    </div>
+                    <div class="customerform">
+                        <label name="Pickup-Up" id="lane1" class="required">Pickup-Up Date: </label><br />
+                        <datalist id="pickupInputOptions"></datalist>
+                        <input type="datetime-local" id="datetime1" class="form-input" placeholder="Pick-up Date" required="required"/>
+                    </div>
+                    <div class="customerform">
+                        <label name="Drop-Off" id="lane1" class="required">Drop-Off: </label><br />
+                        <input type="text" id="dropoffInput" class="form-input" placeholder="Drop-off (City, State / 5d ZIP)" required="required" list="dropoffInputOptions"/>
+                    </div>
+                    <div class="customerform">
+                        <label name="Drop-Off" id="lane1" class="required">Drop-Off Date: </label><br />
+                        <datalist id="dropoffInputOptions"></datalist>
+                        <input type="datetime-local" id="datetime2" class="form-input" placeholder="Drop-off Date" required="required"/>
+                    </div>
+                </div>
+                
+                <span class="distance" name="distance" id="distance"></span>
+                <br />
+
+                <div id="RateNotAvail" class="RateNotAvail">
+                    <div id="notavail" class="notavail">
+                        <label id="disclaimer2" class="disclaimer2">
+                            <p style="font-style: bold; font-size: 14px;">Rates not available</p>
+                            <p style="font-style: normal; font-size: 12px;">Please fill in missing information before requesting rates.</p>
+                        </label>
+                    </div>
+                <br/>
+                </div>
+
+                <div class="rate-draft-container">
+                    <div class="RateInformation" id="RateInformation">
+                        <div class="ratebuttons" id="ratebuttons">
+                            <button id="submitBtn" class="form-submit" onclick="getAccessTokenPT()">Get Quote</button>
+                            <button id="showlaneanalysis" class="form-submit">Lane Analysis (GS)</button>
+                        </div>
+                        <br />
+                        
+                        <div class="customerform">
+                            <label for="buyrate">Buy (GS):</label>
+                            <input type="number" name="buy" id="buy" class="form-input"/>
+                        </div>
+                        
+                        <div class="customerform">
+                            <label for="sellrate">Sell (GS):</label>
+                            <input type="number" name="sell" id="sell" class="form-input"/>
+                        </div>
+                        
+                        <div class="customerform">
+                            <label for="buyrate">Buy (Sonar):</label>
+                            <input type="number" name="buysonar" id="buysonar" class="form-input"/>
+                        </div>
+                        
+                        <div class="customerform">
+                            <label for="sellrate">Sell (Sonar):</label>
+                            <input type="number" name="sellsonar" id="sellsonar" class="form-input"/>
+                        </div>
+                        
+                        <div class="customerform">
+                            <label for="bestrate">Best Rate From Both:</label>
+                            <input type="number" name="bestrate" id="bestrate" class="form-input"/>
+                        </div>
+                    </div>
+        
+                    <div class="customerform2" id="customerform2">
+                        <label name="Draft" id="Draft">Draft Response: </label>
+                        <button id="createDraftBtn" class="createDraftBtn">Create Draft</button>
+                        <textarea name="DraftEmail" id="DraftEmail" class="DraftEmail"></textarea>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="FullLaneAnalysis" id="FullLaneAnalysis" name="FullLaneAnalysis" style="display: none;">
+            <div class="topbuttons">
+                <button id="backBtnLaneAnalysis" name="backBtnLaneAnalysis" class="form-submit">Back</button>
+                <button id="ViewInGS" class="form-submit">View This Lane In GS</button>
+            </div>
+            <br /><br/>
+    
+            <div class="NetworkRatePrediction-container">
+                <div class="NetworkRatePrediction" id="NetworkRatePrediction1" name="NetworkRatePrediction1">
+                    <div class="chart-tabs">
+                        <button class="tab-btn active" onclick="showLaneQuoteHistory()">Lane Quote History</button>
+                        <button class="tab-btn" onclick="showMarketIntelligence()">Market Intelligence</button>
+                    </div>
+                    <canvas id="laneQuoteHistoryChart" width="400" height="200"></canvas>
+                    <br />
+                </div>
+    
+                <div class="NetworkRatePrediction" id="NetworkRatePrediction2" name="NetworkRatePrediction2">
+                    <label for="NegotiationCoach">Negotiation Coach: </label><br />
+                    <p id="holiday" name="holiday"></p>
+                    <p id="lastPaid" name="lastPaid"></p>
+                    <p id="minPaid" name="minPaid"></p>
+                    <p id="maxPaid" name="maxPaid"></p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+</apex:page>

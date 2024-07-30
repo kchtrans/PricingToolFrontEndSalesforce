@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "condition": "rateA < rateB && rateA < rateC",
+      "action": "selectRateA"
+    },
+    {
+      "condition": "rateB < rateA && rateB < rateC",
+      "action": "selectRateB"
+    },
+    {
+      "condition": "rateC < rateA && rateC < rateB",
+      "action": "selectRateC"
+    }
+  ]
+}
