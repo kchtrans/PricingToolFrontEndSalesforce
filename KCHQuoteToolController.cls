@@ -99,7 +99,7 @@ public with sharing class KCHQuoteToolController {
     }
     
     @RemoteAction
-    public static String fetchLaneQuoteHistory(String pickupCity, String pickupState, String pickupZip, String dropoffCity, String dropoffState, String dropoffZip, String equipmentType, String description, String pickupDateTime) {
+    public static String fetchLaneQuoteHistory(String pickupCity, String pickupState, String pickupZip, String dropoffCity, String dropoffState, String dropoffZip, String equipmentType, String pickupDateTime) {
         String accessToken = getAccessToken();
         
         String dateFrom = pickupDateTime.substring(0, 10);  // Extract date part from pickupDateTime
@@ -122,7 +122,7 @@ public with sharing class KCHQuoteToolController {
     }
     
     @RemoteAction
-    public static String fetchNegotiationCoach(String pickupCity, String pickupState, String pickupZip, String dropoffCity, String dropoffState, String dropoffZip, String equipmentType, String description, String pickupDateTime) {
+    public static String fetchNegotiationCoach(String pickupCity, String pickupState, String pickupZip, String dropoffCity, String dropoffState, String dropoffZip, String equipmentType, String pickupDateTime) {
         String accessToken = getAccessToken();
         
         String url = 'https://app.greenscreens.ai/v1/marketintelligence/negotiation-advice?transportType=' + equipmentType + '&originCountry=US&originState=' + pickupState + '&originCity=' + pickupCity + '&originZip=' + pickupZip + '&destinationCountry=US&destinationState=' + dropoffState + '&destinationCity=' + dropoffCity + '&destinationZip=' + dropoffZip + '&hasExtraStops=false&pickUpDateTime=' + pickupDateTime + '&currency=USD&region=KMA';
